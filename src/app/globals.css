@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+:root {
+  --background: #030712;
+  --foreground: #f9fafb;
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: var(--font-geist-sans), Arial, Helvetica, sans-serif;
+}
+
+/* Gaze highlight styles for text layer spans */
+.gaze-fixated {
+  background-color: rgba(250, 204, 21, 0.25) !important;
+  transition: background-color 0.15s ease;
+  border-radius: 2px;
+}
+
+.gaze-partial {
+  background-color: rgba(251, 146, 60, 0.3) !important;
+  transition: background-color 0.3s ease;
+  border-radius: 2px;
+}
+
+.gaze-read {
+  background-color: rgba(74, 222, 128, 0.3) !important;
+  transition: background-color 0.3s ease;
+  border-radius: 2px;
+}
+
+/* Make PDF text layer spans visible for highlighting */
+.rpv-core__text-layer span {
+  position: relative;
+  z-index: 1;
+}
+
+/* WebGazer video preview styling */
+#webgazerVideoContainer {
+  position: fixed !important;
+  bottom: 16px !important;
+  left: 16px !important;
+  top: auto !important;
+  width: 160px !important;
+  height: 120px !important;
+  z-index: 9998 !important;
+  border-radius: 12px !important;
+  overflow: hidden !important;
+  border: 2px solid rgba(59, 130, 246, 0.5) !important;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
+}
+
+#webgazerVideoFeed {
+  width: 100% !important;
+  height: 100% !important;
+  object-fit: cover !important;
+}
+
+#webgazerFaceOverlay,
+#webgazerFaceFeedbackBox {
+  display: none !important;
+}
+
+/* Hide webgazer prediction point -- we use our own cursor */
+#webgazerGazeDot {
+  display: none !important;
+}
+
+/* Calibration dot animation */
+@keyframes calibration-pulse {
+  0%, 100% { transform: scale(1); opacity: 1; }
+  50% { transform: scale(1.2); opacity: 0.7; }
+}
+
+.calibration-dot {
+  animation: calibration-pulse 1.5s ease-in-out infinite;
+}
