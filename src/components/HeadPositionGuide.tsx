@@ -1,8 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState, useCallback } from "react";
-import { onGaze, removeGazeListener } from "@/lib/gaze-engine";
-import type { GazePoint } from "@/types";
+import { useEffect, useRef, useState } from "react";
 
 interface HeadPositionStatus {
   faceDetected: boolean;
@@ -18,10 +16,10 @@ export default function HeadPositionGuide({ onReady }: Props) {
   const [status, setStatus] = useState<HeadPositionStatus>({
     faceDetected: false,
     isStable: false,
-    message: "Waiting for face detection...",
+    message: "Waiting for camera...",
   });
   const [readyCountdown, setReadyCountdown] = useState<number | null>(null);
-  const gazeCountRef = useRef(0);
+  const stableCountRef = useRef(0);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const onReadyRef = useRef(onReady);
   const videoSlotRef = useRef<HTMLDivElement>(null);
@@ -32,20 +30,65 @@ export default function HeadPositionGuide({ onReady }: Props) {
     onReadyRef.current = onReady;
   }, [onReady]);
 
-  const handleGazeForDetection = useCallback((point: GazePoint) => {
-    if (point && !isNaN(point.x) && !isNaN(point.y)) {
-      gazeCountRef.current++;
-    }
-  }, []);
-
-  // Face detection via gaze data
+  // Detect face by checking if the video feed is active and has image data
   useEffect(() => {
-    onGaze(handleGazeForDetection);
-
     const checkInterval = setInterval(() => {
-      const count = gazeCountRef.current;
+      const video = document.getElementById("webgazerVideoFeed") as HTMLVideoElement | null;
 
-      if (count === 0) {
+      if (!video || video.readyState < 2 || video.videoWidth === 0) {
+        stableCountRef.current = 0;
+        setStatus({
+          faceDetected: false,
+          isStable: false,
+          message: "Waiting for camera...",
+        });
+        setReadyCountdown(null);
+        if (countdownRef.current) {
+          clearInterval(countdownRef.current);
+          countdownRef.current = null;
+        }
+        return;
+      }
+
+      // Check if video has non-black content (camera is working and face likely present)
+      // by sampling a small canvas from the center of the video
+      let faceDetected = false;
+      try {
+        const canvas = document.createElement("canvas");
+        const size = 32;
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext("2d");
+        if (ctx) {
+          const cx = video.videoWidth / 2 - size / 2;
+          const cy = video.videoHeight / 2 - size / 2;
+          ctx.drawImage(video, cx, cy, size, size, 0, 0, size, size);
+          const imageData = ctx.getImageData(0, 0, size, size);
+          const pixels = imageData.data;
+
+          // Check brightness variance -- a face has texture/variation,
+          // a covered/black camera does not
+          let sum = 0;
+          let sumSq = 0;
+          const sampleCount = pixels.length / 4;
+          for (let i = 0; i < pixels.length; i += 4) {
+            const brightness = (pixels[i] + pixels[i + 1] + pixels[i + 2]) / 3;
+            sum += brightness;
+            sumSq += brightness * brightness;
+          }
+          const mean = sum / sampleCount;
+          const variance = sumSq / sampleCount - mean * mean;
+
+          // If mean brightness > 20 and variance > 100, there's likely a face
+          faceDetected = mean > 20 && variance > 100;
+        }
+      } catch {
+        // Canvas security error (shouldn't happen with local webcam)
+        faceDetected = false;
+      }
+
+      if (!faceDetected) {
+        stableCountRef.current = 0;
         setStatus({
           faceDetected: false,
           isStable: false,
@@ -59,8 +102,8 @@ export default function HeadPositionGuide({ onReady }: Props) {
         return;
       }
 
-      const isStable = count >= 3;
-      gazeCountRef.current = 0;
+      stableCountRef.current++;
+      const isStable = stableCountRef.current >= 6; // ~3 seconds at 500ms intervals
 
       if (!isStable) {
         setStatus({
@@ -85,7 +128,6 @@ export default function HeadPositionGuide({ onReady }: Props) {
           if (c <= 0) {
             if (countdownRef.current) clearInterval(countdownRef.current);
             countdownRef.current = null;
-            removeGazeListener();
             onReadyRef.current();
           } else {
             setReadyCountdown(c);
@@ -96,13 +138,12 @@ export default function HeadPositionGuide({ onReady }: Props) {
 
     return () => {
       clearInterval(checkInterval);
-      removeGazeListener();
       if (countdownRef.current) {
         clearInterval(countdownRef.current);
         countdownRef.current = null;
       }
     };
-  }, [handleGazeForDetection]);
+  }, []);
 
   // Physically move WebGazer video element into our container
   useEffect(() => {
@@ -139,7 +180,6 @@ export default function HeadPositionGuide({ onReady }: Props) {
       clearTimeout(retry);
       clearTimeout(retry2);
 
-      // Move video back to original parent and clear inline styles
       const wgContainer = document.getElementById("webgazerVideoContainer");
       if (wgContainer && movedRef.current) {
         const target = originalParentRef.current || document.body;
@@ -156,7 +196,6 @@ export default function HeadPositionGuide({ onReady }: Props) {
         ref={videoSlotRef}
         className="relative w-72 h-52 rounded-2xl overflow-hidden border-2 border-gray-700 bg-gray-900"
       >
-        {/* WebGazer video element gets moved here */}
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
           <div
             className={`w-36 h-48 rounded-[50%] border-2 border-dashed transition-colors duration-300 ${
