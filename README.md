@@ -1,36 +1,94 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Document Eye Tracking
+
+A web application that verifies whether a person has read a document by tracking their eye movements in real-time using a standard webcam. No special hardware required.
+
+## How It Works
+
+1. **Calibrate** -- A 13-point calibration process trains an eye tracking model to your eyes using your webcam. A head position guide ensures you're properly positioned before calibration begins.
+
+2. **Read** -- Upload a PDF and read it naturally. The system tracks your gaze in real-time, highlighting text as your eyes move across it. Text transitions from unread to partially read (orange) to fully read (green) based on dwell time.
+
+3. **Verify** -- When you're done, a verification report shows your reading coverage percentage, average fixation duration, time spent, and a final verdict: Verified Read, Partial Read, Skimmed, or Insufficient Data.
+
+## Technical Overview
+
+### Eye Tracking Pipeline
+
+- **WebGazer.js** captures raw gaze coordinates from the webcam at 30-60Hz
+- A **1-Euro filter** adaptively smooths the gaze signal (heavy smoothing when still, light smoothing during saccades)
+- An **outlier rejector** drops gaze points that fall more than 3 standard deviations from the recent mean
+- A **fixation detector** clusters nearby gaze points and identifies when the eyes have paused on a region for 100ms+
+- `document.elementFromPoint()` maps each fixation to a text span in the PDF's text layer
+- A **read tracker** accumulates dwell time per span, marking it as "read" once it exceeds 250ms
+
+### Calibration
+
+- 13-point grid with 8 clicks per point (104 training samples)
+- Edge points placed at 15% from screen edges for better webcam accuracy
+- Head position check with face detection before calibration starts
+- 4-point validation with quality grading (excellent/good/fair/poor)
+- Adaptive fixation radius scaled to 65% of measured calibration error
+- Continuous calibration during reading (WebGazer learns from every click)
+
+### Drift Detection
+
+During reading, the system monitors for calibration drift:
+- Warns if the face is lost for 3+ seconds
+- Warns if 40%+ of recent gaze points fall off-screen
+- Offers quick re-calibration from the reading view
+
+## Tech Stack
+
+- **Next.js 16** (App Router, TypeScript)
+- **WebGazer.js** -- browser-based eye tracking via webcam
+- **react-pdf-viewer** -- PDF rendering with text layer for gaze mapping
+- **Zustand** -- lightweight state management for real-time gaze data
+- **Tailwind CSS** -- styling
 
 ## Getting Started
 
-First, run the development server:
-
 ```bash
+# Install dependencies
+npm install
+
+# Run development server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+
+# Build for production
+npm run build
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open [http://localhost:3000](http://localhost:3000) and click "Calibrate" to begin.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Project Structure
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```
+src/
+  app/                  # Next.js pages (home, calibrate, read, report)
+  components/           # React components
+    CalibrationScreen   # 13-point calibration flow
+    CalibrationValidator # Post-calibration accuracy check
+    HeadPositionGuide   # Webcam face positioning guide
+    DocumentUploader    # PDF drag-and-drop upload
+    DocumentViewer      # PDF viewer with gaze overlay
+    VerificationReport  # Reading verification results
+  lib/
+    gaze-engine         # WebGazer wrapper, 1-Euro filter integration
+    one-euro-filter     # Adaptive signal smoothing
+    outlier-rejector    # Statistical outlier detection
+    fixation-detector   # Gaze clustering and fixation identification
+    text-mapper         # PDF text layer span registration
+    read-tracker        # Per-span dwell time accumulation
+    drift-detector      # Calibration drift monitoring
+    verification        # Read score computation
+  stores/               # Zustand stores (gaze, document, calibration)
+  types/                # TypeScript interfaces
+```
 
-## Learn More
+## Tips for Best Results
 
-To learn more about Next.js, take a look at the following resources:
-
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
-
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
-
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+- Sit at arm's length from your screen
+- Ensure even lighting on your face with no backlighting
+- Keep your head still during calibration -- move only your eyes
+- Click precisely on the center of each calibration dot
+- Avoid glasses with strong reflections if possible
