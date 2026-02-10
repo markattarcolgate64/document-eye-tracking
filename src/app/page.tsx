@@ -103,7 +103,7 @@ export default function Home() {
               </div>
               <h4 className="text-white font-medium mb-1">Calibrate</h4>
               <p className="text-gray-500 text-sm">
-                Quick 9-point eye tracking calibration using your webcam
+                13-point eye tracking calibration using your webcam
               </p>
             </div>
             <div className="text-center">

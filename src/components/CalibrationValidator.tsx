@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { onGaze, removeGazeListener } from "@/lib/gaze-engine";
 import type { CalibrationQuality, GazePoint } from "@/types";
 
@@ -21,46 +21,42 @@ interface Props {
 
 export default function CalibrationValidator({ onComplete, onRetry }: Props) {
   const [activeIndex, setActiveIndex] = useState(0);
-  const [sampleCount, setSampleCount] = useState(0);
-  const [status, setStatus] = useState<"waiting" | "collecting" | "done">("waiting");
+  const [displayCount, setDisplayCount] = useState(0);
+
   const activeIndexRef = useRef(0);
   const samplesRef = useRef<GazePoint[]>([]);
   const errorsRef = useRef<number[]>([]);
   const doneRef = useRef(false);
+  const onCompleteRef = useRef(onComplete);
 
-  useEffect(() => {
-    activeIndexRef.current = activeIndex;
-  }, [activeIndex]);
+  useEffect(() => { activeIndexRef.current = activeIndex; }, [activeIndex]);
+  useEffect(() => { onCompleteRef.current = onComplete; }, [onComplete]);
 
-  const finishPoint = (samples: GazePoint[], idx: number) => {
+  const finishPoint = useCallback((samples: GazePoint[], idx: number) => {
     const target = VALIDATION_POINTS[idx];
     const screenX = (target.x / 100) * window.innerWidth;
     const screenY = (target.y / 100) * window.innerHeight;
 
     let avgError = 300;
     if (samples.length > 0) {
-      avgError =
-        samples.reduce((sum, s) => {
-          const dx = s.x - screenX;
-          const dy = s.y - screenY;
-          return sum + Math.sqrt(dx * dx + dy * dy);
-        }, 0) / samples.length;
+      avgError = samples.reduce((sum, s) => {
+        const dx = s.x - screenX;
+        const dy = s.y - screenY;
+        return sum + Math.sqrt(dx * dx + dy * dy);
+      }, 0) / samples.length;
     }
 
     errorsRef.current.push(avgError);
 
     if (idx < VALIDATION_POINTS.length - 1) {
       samplesRef.current = [];
-      setSampleCount(0);
+      setDisplayCount(0);
       setActiveIndex(idx + 1);
-      setStatus("waiting");
     } else {
       if (doneRef.current) return;
       doneRef.current = true;
 
-      const totalError =
-        errorsRef.current.reduce((a, b) => a + b, 0) /
-        errorsRef.current.length;
+      const totalError = errorsRef.current.reduce((a, b) => a + b, 0) / errorsRef.current.length;
 
       let quality: CalibrationQuality;
       if (totalError < 75) quality = "excellent";
@@ -68,24 +64,20 @@ export default function CalibrationValidator({ onComplete, onRetry }: Props) {
       else if (totalError < 250) quality = "fair";
       else quality = "poor";
 
-      setStatus("done");
-      onComplete(quality, totalError);
+      onCompleteRef.current(quality, totalError);
     }
-  };
+  }, []);
 
   useEffect(() => {
-    if (status === "done" || doneRef.current) return;
+    if (doneRef.current) return;
 
     samplesRef.current = [];
-    setSampleCount(0);
 
     const startTimeout = setTimeout(() => {
-      setStatus("collecting");
-
       onGaze((point: GazePoint) => {
         if (doneRef.current) return;
         samplesRef.current.push(point);
-        setSampleCount(samplesRef.current.length);
+        setDisplayCount(samplesRef.current.length);
 
         if (samplesRef.current.length >= SAMPLES_PER_POINT) {
           removeGazeListener();
@@ -105,8 +97,7 @@ export default function CalibrationValidator({ onComplete, onRetry }: Props) {
       clearTimeout(fallbackTimeout);
       removeGazeListener();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [activeIndex]);
+  }, [activeIndex, finishPoint]);
 
   const point = VALIDATION_POINTS[activeIndex];
 
@@ -114,19 +105,13 @@ export default function CalibrationValidator({ onComplete, onRetry }: Props) {
     <div className="min-h-screen relative bg-gray-950">
       <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 bg-gray-900/90 px-6 py-3 rounded-full text-center">
         <p className="text-white text-sm">
-          Validation: Look at the dot ({activeIndex + 1}/
-          {VALIDATION_POINTS.length})
+          Validation: Look at the dot ({activeIndex + 1}/{VALIDATION_POINTS.length})
         </p>
-        {status === "collecting" && (
-          <p className="text-blue-400 text-xs mt-1">
-            Collecting... ({sampleCount}/{SAMPLES_PER_POINT})
-          </p>
-        )}
-        {status === "waiting" && (
-          <p className="text-gray-400 text-xs mt-1">
-            Get ready...
-          </p>
-        )}
+        <p className="text-blue-400 text-xs mt-1">
+          {displayCount > 0
+            ? `Collecting... (${displayCount}/${SAMPLES_PER_POINT})`
+            : "Get ready..."}
+        </p>
       </div>
 
       <div

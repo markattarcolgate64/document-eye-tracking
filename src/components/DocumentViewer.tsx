@@ -35,8 +35,8 @@ export default function DocumentViewer() {
   const { averageError } = useCalibrationStore();
   const containerRef = useRef<HTMLDivElement>(null);
   const fixationDetectorRef = useRef<FixationDetector | null>(null);
-  const readTrackerRef = useRef<ReadTracker>(new ReadTracker(READ_THRESHOLD_MS));
-  const driftDetectorRef = useRef<DriftDetector>(new DriftDetector());
+  const readTrackerRef = useRef<ReadTracker | null>(null);
+  const driftDetectorRef = useRef<DriftDetector | null>(null);
   const [coveragePercent, setCoveragePercent] = useState(0);
   const [readSpans, setReadSpans] = useState(0);
   const [totalSpans, setTotalSpans] = useState(0);
@@ -45,9 +45,17 @@ export default function DocumentViewer() {
   const [isReady, setIsReady] = useState(false);
   const [driftWarning, setDriftWarning] = useState<string | null>(null);
   const startTimeRef = useRef(0);
+  const registeredPagesRef = useRef<Set<number>>(new Set());
 
+  // Initialize refs in effect to avoid impure render
   useEffect(() => {
     startTimeRef.current = Date.now();
+    if (!readTrackerRef.current) {
+      readTrackerRef.current = new ReadTracker(READ_THRESHOLD_MS);
+    }
+    if (!driftDetectorRef.current) {
+      driftDetectorRef.current = new DriftDetector();
+    }
   }, []);
 
   const applyHighlight = useCallback((spanId: string, status: string) => {
@@ -74,6 +82,8 @@ export default function DocumentViewer() {
   const handleFixation = useCallback(
     (fixation: Fixation) => {
       const tracker = readTrackerRef.current;
+      if (!tracker) return;
+
       tracker.recordFixation(fixation);
 
       if (fixation.targetSpanId) {
@@ -98,6 +108,38 @@ export default function DocumentViewer() {
     [applyHighlight, updateSession]
   );
 
+  // Scan for new pages and register their text spans
+  const scanAndRegisterPages = useCallback(() => {
+    const container = containerRef.current;
+    if (!container) return;
+
+    const pages = container.querySelectorAll(".rpv-core__page-layer");
+    pages.forEach((page, idx) => {
+      if (!registeredPagesRef.current.has(idx)) {
+        const textLayer = page.querySelector(".rpv-core__text-layer");
+        if (textLayer && textLayer.children.length > 0) {
+          registerTextSpans(page as HTMLElement, idx);
+          registeredPagesRef.current.add(idx);
+        }
+      }
+    });
+
+    setTotalSpans(getTotalSpanCount());
+
+    // Also re-apply highlights for already-read spans that may have re-rendered
+    if (readTrackerRef.current) {
+      const readMap = readTrackerRef.current.getReadMap();
+      Object.keys(readMap).forEach((spanId) => {
+        const data = readMap[spanId];
+        if (data.isRead) {
+          applyHighlight(spanId, "read");
+        } else if (data.totalDwellTime > 0) {
+          applyHighlight(spanId, "partial");
+        }
+      });
+    }
+  }, [applyHighlight]);
+
   // Timer
   useEffect(() => {
     const interval = setInterval(() => {
@@ -106,7 +148,7 @@ export default function DocumentViewer() {
     return () => clearInterval(interval);
   }, []);
 
-  // Gaze tracking setup with adaptive radius and drift detection
+  // Gaze tracking setup
   useEffect(() => {
     if (!isReady) return;
 
@@ -120,13 +162,15 @@ export default function DocumentViewer() {
     });
 
     const drift = driftDetectorRef.current;
-    drift.start((status: DriftStatus, message: string) => {
-      if (status === "ok") {
-        setDriftWarning(null);
-      } else {
-        setDriftWarning(message);
-      }
-    });
+    if (drift) {
+      drift.start((driftStatus: DriftStatus, message: string) => {
+        if (driftStatus === "ok") {
+          setDriftWarning(null);
+        } else {
+          setDriftWarning(message);
+        }
+      });
+    }
 
     const startTracking = async () => {
       if (!getIsRunning()) {
@@ -138,7 +182,7 @@ export default function DocumentViewer() {
       onGaze((point: GazePoint) => {
         setGaze(point);
         fixationDetectorRef.current?.addPoint(point);
-        drift.addPoint(point);
+        drift?.addPoint(point);
       });
 
       setTracking(true);
@@ -150,39 +194,32 @@ export default function DocumentViewer() {
       removeGazeListener();
       setTracking(false);
       fixationDetectorRef.current?.flush();
-      drift.stop();
+      drift?.stop();
     };
   }, [isReady, handleFixation, setGaze, setTracking, averageError]);
 
-  // Continuous calibration: clicks during reading feed back into WebGazer
-  useEffect(() => {
-    if (!isReady) return;
-
-    const handleClick = () => {
-      // WebGazer automatically records click position + current gaze
-      // as a new training sample when it's running, improving accuracy
-      // over time. No additional code needed -- just ensure WebGazer
-      // is active (which it is during reading).
-    };
-
-    window.addEventListener("click", handleClick);
-    return () => window.removeEventListener("click", handleClick);
-  }, [isReady]);
-
-  // Scroll handler to refresh span positions
+  // Scroll handler: refresh rects + scan for new pages
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
 
+    let scrollTimeout: ReturnType<typeof setTimeout>;
     const handleScroll = () => {
-      refreshSpanRects(container);
+      clearTimeout(scrollTimeout);
+      scrollTimeout = setTimeout(() => {
+        refreshSpanRects(container);
+        scanAndRegisterPages();
+      }, 150);
     };
 
     container.addEventListener("scroll", handleScroll, { passive: true });
-    return () => container.removeEventListener("scroll", handleScroll);
-  }, []);
+    return () => {
+      container.removeEventListener("scroll", handleScroll);
+      clearTimeout(scrollTimeout);
+    };
+  }, [scanAndRegisterPages]);
 
-  // Visibility change -- pause tracking when tab is hidden
+  // Visibility change
   useEffect(() => {
     const handleVisibility = () => {
       if (window.document.hidden) {
@@ -191,7 +228,7 @@ export default function DocumentViewer() {
         onGaze((point: GazePoint) => {
           setGaze(point);
           fixationDetectorRef.current?.addPoint(point);
-          driftDetectorRef.current.addPoint(point);
+          driftDetectorRef.current?.addPoint(point);
         });
       }
     };
@@ -201,27 +238,35 @@ export default function DocumentViewer() {
       window.document.removeEventListener("visibilitychange", handleVisibility);
   }, [isReady, setGaze]);
 
+  // On document load, start polling for text layers to appear
   const handleDocumentLoad = useCallback(() => {
-    setTimeout(() => {
-      if (containerRef.current) {
-        const pages = containerRef.current.querySelectorAll(
-          ".rpv-core__page-layer"
-        );
-        pages.forEach((page, idx) => {
-          registerTextSpans(page as HTMLElement, idx);
-        });
-        setTotalSpans(getTotalSpanCount());
+    let attempts = 0;
+    const maxAttempts = 20;
+
+    const pollForTextLayer = () => {
+      attempts++;
+      scanAndRegisterPages();
+
+      if (getTotalSpanCount() > 0) {
+        setIsReady(true);
+        return;
+      }
+
+      if (attempts < maxAttempts) {
+        setTimeout(pollForTextLayer, 500);
+      } else {
+        // Give up waiting and mark ready anyway
         setIsReady(true);
       }
-    }, 1500);
-  }, []);
+    };
+
+    setTimeout(pollForTextLayer, 500);
+  }, [scanAndRegisterPages]);
 
   if (!doc) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-950">
-        <p className="text-gray-400">
-          No document loaded. Please upload a PDF.
-        </p>
+        <p className="text-gray-400">No document loaded. Please upload a PDF.</p>
       </div>
     );
   }
@@ -245,10 +290,7 @@ export default function DocumentViewer() {
             >
               Dismiss
             </button>
-            <a
-              href="/calibrate"
-              className="text-xs px-2 py-1 bg-yellow-700 text-white rounded"
-            >
+            <a href="/calibrate" className="text-xs px-2 py-1 bg-yellow-700 text-white rounded">
               Re-calibrate
             </a>
           </div>
@@ -256,24 +298,17 @@ export default function DocumentViewer() {
       )}
 
       <div className="flex items-center justify-between px-6 py-2 bg-gray-900 border-b border-gray-800">
-        <h2 className="text-white text-sm font-medium truncate max-w-md">
-          {doc.name}
-        </h2>
+        <h2 className="text-white text-sm font-medium truncate max-w-md">{doc.name}</h2>
         <div className="flex gap-3">
           <button
             onClick={() => setShowGazeCursor(!showGazeCursor)}
             className={`text-xs px-3 py-1.5 rounded ${
-              showGazeCursor
-                ? "bg-blue-600 text-white"
-                : "bg-gray-700 text-gray-300"
+              showGazeCursor ? "bg-blue-600 text-white" : "bg-gray-700 text-gray-300"
             }`}
           >
             {showGazeCursor ? "Hide Cursor" : "Show Cursor"}
           </button>
-          <a
-            href="/report"
-            className="text-xs px-3 py-1.5 rounded bg-green-700 text-white hover:bg-green-600"
-          >
+          <a href="/report" className="text-xs px-3 py-1.5 rounded bg-green-700 text-white hover:bg-green-600">
             Finish & Report
           </a>
         </div>

@@ -24,6 +24,9 @@ export default function HeadPositionGuide({ onReady }: Props) {
   const gazeCountRef = useRef(0);
   const countdownRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const onReadyRef = useRef(onReady);
+  const videoSlotRef = useRef<HTMLDivElement>(null);
+  const originalParentRef = useRef<HTMLElement | null>(null);
+  const movedRef = useRef(false);
 
   useEffect(() => {
     onReadyRef.current = onReady;
@@ -35,6 +38,7 @@ export default function HeadPositionGuide({ onReady }: Props) {
     }
   }, []);
 
+  // Face detection via gaze data
   useEffect(() => {
     onGaze(handleGazeForDetection);
 
@@ -75,16 +79,16 @@ export default function HeadPositionGuide({ onReady }: Props) {
 
       if (!countdownRef.current) {
         setReadyCountdown(3);
-        let count = 3;
+        let c = 3;
         countdownRef.current = setInterval(() => {
-          count--;
-          if (count <= 0) {
+          c--;
+          if (c <= 0) {
             if (countdownRef.current) clearInterval(countdownRef.current);
             countdownRef.current = null;
             removeGazeListener();
             onReadyRef.current();
           } else {
-            setReadyCountdown(count);
+            setReadyCountdown(c);
           }
         }, 1000);
       }
@@ -100,35 +104,48 @@ export default function HeadPositionGuide({ onReady }: Props) {
     };
   }, [handleGazeForDetection]);
 
-  // Move WebGazer video into our container for the position check
+  // Physically move WebGazer video element into our container
   useEffect(() => {
-    const moveVideo = () => {
-      const container = document.getElementById("head-position-video-slot");
+    const tryMove = () => {
+      const slot = videoSlotRef.current;
       const wgContainer = document.getElementById("webgazerVideoContainer");
-      if (container && wgContainer) {
-        wgContainer.style.cssText = `
-          position: absolute !important;
-          top: 0 !important;
-          left: 0 !important;
-          width: 100% !important;
-          height: 100% !important;
-          z-index: 1 !important;
-          border: none !important;
-          border-radius: 0 !important;
-          box-shadow: none !important;
-        `;
-      }
+      if (!slot || !wgContainer || movedRef.current) return;
+
+      originalParentRef.current = wgContainer.parentElement;
+      slot.appendChild(wgContainer);
+      movedRef.current = true;
+
+      wgContainer.style.cssText = `
+        position: relative !important;
+        width: 100% !important;
+        height: 100% !important;
+        top: auto !important;
+        left: auto !important;
+        right: auto !important;
+        bottom: auto !important;
+        z-index: 1 !important;
+        border: none !important;
+        border-radius: 0 !important;
+        box-shadow: none !important;
+        display: block !important;
+      `;
     };
 
-    moveVideo();
-    const retryTimeout = setTimeout(moveVideo, 500);
+    tryMove();
+    const retry = setTimeout(tryMove, 300);
+    const retry2 = setTimeout(tryMove, 800);
 
     return () => {
-      clearTimeout(retryTimeout);
-      // Restore default styling -- CSS will take over
+      clearTimeout(retry);
+      clearTimeout(retry2);
+
+      // Move video back to original parent and clear inline styles
       const wgContainer = document.getElementById("webgazerVideoContainer");
-      if (wgContainer) {
+      if (wgContainer && movedRef.current) {
+        const target = originalParentRef.current || document.body;
+        target.appendChild(wgContainer);
         wgContainer.style.cssText = "";
+        movedRef.current = false;
       }
     };
   }, []);
@@ -136,10 +153,10 @@ export default function HeadPositionGuide({ onReady }: Props) {
   return (
     <div className="flex flex-col items-center gap-4">
       <div
-        id="head-position-video-slot"
+        ref={videoSlotRef}
         className="relative w-72 h-52 rounded-2xl overflow-hidden border-2 border-gray-700 bg-gray-900"
       >
-        {/* WebGazer video gets repositioned here */}
+        {/* WebGazer video element gets moved here */}
         <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-10">
           <div
             className={`w-36 h-48 rounded-[50%] border-2 border-dashed transition-colors duration-300 ${
