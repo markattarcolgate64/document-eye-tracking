@@ -36,11 +36,12 @@ body {
   z-index: 1;
 }
 
-/* WebGazer video preview styling */
+/* WebGazer video preview -- default: small bottom-right corner */
 #webgazerVideoContainer {
   position: fixed !important;
   bottom: 16px !important;
-  left: 16px !important;
+  right: 16px !important;
+  left: auto !important;
   top: auto !important;
   width: 160px !important;
   height: 120px !important;
@@ -49,6 +50,12 @@ body {
   overflow: hidden !important;
   border: 2px solid rgba(59, 130, 246, 0.5) !important;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.5) !important;
+  transition: all 0.3s ease !important;
+}
+
+/* Hide webcam during calibration dot phase so it doesn't cover any dots */
+body.calibrating #webgazerVideoContainer {
+  display: none !important;
 }
 
 #webgazerVideoFeed {

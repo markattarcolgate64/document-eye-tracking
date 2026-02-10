@@ -1,25 +1,45 @@
 import type { GazePoint } from "@/types";
+import { GazeFilter } from "./one-euro-filter";
+import { OutlierRejector } from "./outlier-rejector";
 
-const SMOOTHING_WINDOW = 5;
-
-let gazeBuffer: GazePoint[] = [];
 let gazeListener: ((point: GazePoint) => void) | null = null;
 let isRunning = false;
+let gazeFilter: GazeFilter | null = null;
+let outlierRejector: OutlierRejector | null = null;
 
-function smoothGaze(buffer: GazePoint[]): GazePoint {
-  const len = buffer.length;
-  if (len === 0) return { x: 0, y: 0, timestamp: Date.now() };
-  const sumX = buffer.reduce((s, p) => s + p.x, 0);
-  const sumY = buffer.reduce((s, p) => s + p.y, 0);
-  return {
-    x: sumX / len,
-    y: sumY / len,
-    timestamp: buffer[len - 1].timestamp,
-  };
+function waitForVideoReady(timeoutMs = 5000): Promise<void> {
+  return new Promise((resolve) => {
+    const start = Date.now();
+    const check = () => {
+      const video = document.getElementById(
+        "webgazerVideoFeed"
+      ) as HTMLVideoElement | null;
+      if (
+        video &&
+        video.videoWidth > 0 &&
+        video.videoHeight > 0 &&
+        video.readyState >= 2
+      ) {
+        resolve();
+        return;
+      }
+      if (Date.now() - start > timeoutMs) {
+        resolve();
+        return;
+      }
+      requestAnimationFrame(check);
+    };
+    check();
+  });
 }
 
 export async function initGazeEngine(): Promise<void> {
+  if (isRunning) return;
+
   const webgazer = (await import("webgazer")).default;
+
+  gazeFilter = new GazeFilter(30, 1.5, 0.01);
+  outlierRejector = new OutlierRejector(20, 3.0);
 
   webgazer.params.showVideoPreview = true;
   webgazer.params.showFaceOverlay = false;
@@ -27,30 +47,35 @@ export async function initGazeEngine(): Promise<void> {
 
   webgazer.setRegression("ridge");
 
+  await webgazer.begin();
+  await waitForVideoReady();
+
   webgazer.setGazeListener(
     (data: { x: number; y: number } | null) => {
       if (!data) return;
+      if (isNaN(data.x) || isNaN(data.y)) return;
 
-      const raw: GazePoint = {
-        x: data.x,
-        y: data.y,
-        timestamp: Date.now(),
-      };
+      const now = Date.now();
+      const raw: GazePoint = { x: data.x, y: data.y, timestamp: now };
 
-      gazeBuffer.push(raw);
-      if (gazeBuffer.length > SMOOTHING_WINDOW) {
-        gazeBuffer = gazeBuffer.slice(-SMOOTHING_WINDOW);
+      if (outlierRejector && outlierRejector.isOutlier(raw)) {
+        return;
       }
 
-      const smoothed = smoothGaze(gazeBuffer);
-
-      if (gazeListener) {
-        gazeListener(smoothed);
+      if (gazeFilter) {
+        const filtered = gazeFilter.filter(data.x, data.y, now);
+        const smoothed: GazePoint = {
+          x: filtered.x,
+          y: filtered.y,
+          timestamp: now,
+        };
+        if (gazeListener) {
+          gazeListener(smoothed);
+        }
       }
     }
   );
 
-  await webgazer.begin();
   isRunning = true;
 }
 
@@ -67,8 +92,9 @@ export async function stopGazeEngine(): Promise<void> {
   const webgazer = (await import("webgazer")).default;
   webgazer.end();
   isRunning = false;
-  gazeBuffer = [];
   gazeListener = null;
+  gazeFilter?.reset();
+  outlierRejector?.reset();
 }
 
 export async function pauseGazeEngine(): Promise<void> {
@@ -89,6 +115,13 @@ export async function showVideo(show: boolean): Promise<void> {
 export async function showPredictionPoints(show: boolean): Promise<void> {
   const webgazer = (await import("webgazer")).default;
   webgazer.showPredictionPoints(show);
+}
+
+export async function clearCalibrationData(): Promise<void> {
+  const webgazer = (await import("webgazer")).default;
+  webgazer.clearData();
+  gazeFilter?.reset();
+  outlierRejector?.reset();
 }
 
 export function getIsRunning(): boolean {

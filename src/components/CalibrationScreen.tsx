@@ -1,27 +1,42 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import CalibrationPoint from "./CalibrationPoint";
 import CalibrationValidator from "./CalibrationValidator";
+import HeadPositionGuide from "./HeadPositionGuide";
 import { useCalibrationStore } from "@/stores/calibration-store";
-import { initGazeEngine, showPredictionPoints, showVideo } from "@/lib/gaze-engine";
+import {
+  initGazeEngine,
+  showPredictionPoints,
+  showVideo,
+  clearCalibrationData,
+} from "@/lib/gaze-engine";
 
 const CALIBRATION_POINTS = [
-  { x: 10, y: 10 },
-  { x: 50, y: 10 },
-  { x: 90, y: 10 },
-  { x: 10, y: 50 },
+  // Row 1 (top)
+  { x: 15, y: 15 },
+  { x: 50, y: 15 },
+  { x: 85, y: 15 },
+  // Row 2 (upper-mid)
+  { x: 30, y: 37 },
+  { x: 70, y: 37 },
+  // Row 3 (center)
+  { x: 15, y: 50 },
   { x: 50, y: 50 },
-  { x: 90, y: 50 },
-  { x: 10, y: 90 },
-  { x: 50, y: 90 },
-  { x: 90, y: 90 },
+  { x: 85, y: 50 },
+  // Row 4 (lower-mid)
+  { x: 30, y: 63 },
+  { x: 70, y: 63 },
+  // Row 5 (bottom)
+  { x: 15, y: 85 },
+  { x: 50, y: 85 },
+  { x: 85, y: 85 },
 ];
 
-const CLICKS_PER_POINT = 5;
+const CLICKS_PER_POINT = 8;
 
-type Phase = "setup" | "calibrating" | "validating" | "complete";
+type Phase = "setup" | "positioning" | "calibrating" | "validating" | "complete";
 
 export default function CalibrationScreen() {
   const router = useRouter();
@@ -34,14 +49,26 @@ export default function CalibrationScreen() {
   const [error, setError] = useState<string | null>(null);
   const [isInitializing, setIsInitializing] = useState(false);
 
+  useEffect(() => {
+    if (phase === "calibrating" || phase === "validating") {
+      document.body.classList.add("calibrating");
+    } else {
+      document.body.classList.remove("calibrating");
+    }
+    return () => {
+      document.body.classList.remove("calibrating");
+    };
+  }, [phase]);
+
   const handleStartCalibration = useCallback(async () => {
     setIsInitializing(true);
     setError(null);
     try {
       await initGazeEngine();
+      await clearCalibrationData();
       await showPredictionPoints(false);
       await showVideo(true);
-      setPhase("calibrating");
+      setPhase("positioning");
     } catch {
       setError(
         "Failed to initialize webcam. Please allow camera access and try again."
@@ -51,24 +78,28 @@ export default function CalibrationScreen() {
     }
   }, []);
 
+  const handlePositionReady = useCallback(() => {
+    setPhase("calibrating");
+  }, []);
+
   const handlePointClick = useCallback(
     (index: number) => {
       setClickCounts((prev) => {
         const next = [...prev];
         next[index]++;
+
+        if (next[index] >= CLICKS_PER_POINT) {
+          if (index < CALIBRATION_POINTS.length - 1) {
+            setActivePointIndex(index + 1);
+          } else {
+            setPhase("validating");
+          }
+        }
+
         return next;
       });
-
-      const newCount = clickCounts[index] + 1;
-      if (newCount >= CLICKS_PER_POINT) {
-        if (index < CALIBRATION_POINTS.length - 1) {
-          setActivePointIndex(index + 1);
-        } else {
-          setPhase("validating");
-        }
-      }
     },
-    [clickCounts]
+    []
   );
 
   const handleValidationComplete = useCallback(
@@ -79,14 +110,15 @@ export default function CalibrationScreen() {
     [setCalibrated]
   );
 
-  const handleRetry = useCallback(() => {
+  const handleRetry = useCallback(async () => {
+    await clearCalibrationData();
     setClickCounts(CALIBRATION_POINTS.map(() => 0));
     setActivePointIndex(0);
-    setPhase("calibrating");
+    setPhase("positioning");
   }, []);
 
   const handleContinue = useCallback(() => {
-    router.push("/read");
+    router.push("/");
   }, [router]);
 
   const totalClicks = clickCounts.reduce((a, b) => a + b, 0);
@@ -122,22 +154,26 @@ export default function CalibrationScreen() {
             Eye Tracking Calibration
           </h1>
           <p className="text-gray-400 mb-6 leading-relaxed">
-            We need to calibrate the eye tracker to your eyes. You will see 9
-            dots on the screen. Look at each dot and click it 5 times. This
-            helps the system learn where you are looking.
+            We need to calibrate the eye tracker to your eyes. You will see 13
+            dots across the screen. Look at each dot and click it 8 times while
+            keeping your eyes locked on it.
           </p>
           <ul className="text-left text-gray-400 mb-8 space-y-2">
             <li className="flex items-start gap-2">
               <span className="text-blue-400 mt-1">1.</span>
-              Position yourself comfortably facing your webcam
+              Ensure good, even lighting on your face (no backlighting)
             </li>
             <li className="flex items-start gap-2">
               <span className="text-blue-400 mt-1">2.</span>
-              Ensure good lighting on your face
+              Sit at arm&apos;s length from your screen
             </li>
             <li className="flex items-start gap-2">
               <span className="text-blue-400 mt-1">3.</span>
-              Look at each dot and click it while looking at it
+              Keep your head still -- move only your eyes to each dot
+            </li>
+            <li className="flex items-start gap-2">
+              <span className="text-blue-400 mt-1">4.</span>
+              Click precisely while looking directly at the dot center
             </li>
           </ul>
           {error && (
@@ -155,8 +191,36 @@ export default function CalibrationScreen() {
     );
   }
 
+  if (phase === "positioning") {
+    return (
+      <div className="min-h-screen flex items-center justify-center bg-gray-950">
+        <div className="max-w-md text-center p-8">
+          <h2 className="text-2xl font-bold text-white mb-6">
+            Position Check
+          </h2>
+          <p className="text-gray-400 mb-8 text-sm">
+            Align your face within the oval guide. Calibration will start
+            automatically once your position is stable.
+          </p>
+          <HeadPositionGuide onReady={handlePositionReady} />
+          <button
+            onClick={handlePositionReady}
+            className="mt-6 text-xs px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 rounded-lg transition-colors"
+          >
+            Skip position check
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   if (phase === "validating") {
-    return <CalibrationValidator onComplete={handleValidationComplete} onRetry={handleRetry} />;
+    return (
+      <CalibrationValidator
+        onComplete={handleValidationComplete}
+        onRetry={handleRetry}
+      />
+    );
   }
 
   if (phase === "complete") {
@@ -194,7 +258,8 @@ export default function CalibrationScreen() {
                   : "bg-red-500/20 text-red-400"
               }`}
             >
-              Quality: {quality?.charAt(0).toUpperCase()}{quality?.slice(1)}
+              Quality: {quality?.charAt(0).toUpperCase()}
+              {quality?.slice(1)}
             </span>
             <p className="text-gray-400 mt-2 text-sm">
               Average error: {averageError?.toFixed(0)}px
@@ -222,7 +287,7 @@ export default function CalibrationScreen() {
   // Calibrating phase
   return (
     <div className="min-h-screen relative bg-gray-950">
-      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-10 bg-gray-900/90 px-6 py-3 rounded-full">
+      <div className="absolute top-4 left-1/2 -translate-x-1/2 z-[60] bg-gray-900/90 px-6 py-3 rounded-full">
         <p className="text-white text-sm">
           Look at the pulsing dot and click it ({activePointIndex + 1}/
           {CALIBRATION_POINTS.length})
@@ -233,6 +298,9 @@ export default function CalibrationScreen() {
             style={{ width: `${progress}%` }}
           />
         </div>
+        <p className="text-gray-500 text-[10px] mt-1 text-center">
+          {clickCounts[activePointIndex]}/{CLICKS_PER_POINT} clicks on current dot
+        </p>
       </div>
 
       {CALIBRATION_POINTS.map((point, idx) => (

@@ -1,6 +1,6 @@
 import type { GazePoint, Fixation } from "@/types";
 
-const FIXATION_RADIUS = 50; // px
+const DEFAULT_FIXATION_RADIUS = 50;
 const MIN_FIXATION_DURATION = 100; // ms
 
 interface FixationDetectorConfig {
@@ -16,9 +16,21 @@ export class FixationDetector {
   private currentCluster: GazePoint[] = [];
 
   constructor(config: FixationDetectorConfig = {}) {
-    this.radius = config.radius ?? FIXATION_RADIUS;
+    this.radius = config.radius ?? DEFAULT_FIXATION_RADIUS;
     this.minDuration = config.minDuration ?? MIN_FIXATION_DURATION;
     this.onFixation = config.onFixation ?? null;
+  }
+
+  setRadius(radius: number) {
+    this.radius = Math.max(20, Math.min(radius, 200));
+  }
+
+  static radiusFromCalibrationError(avgError: number): number {
+    // Scale fixation radius to ~60-70% of calibration error
+    // so we're sensitive enough to detect fixations but not so tight
+    // that noise causes constant cluster breaks
+    const scaled = avgError * 0.65;
+    return Math.max(30, Math.min(scaled, 150));
   }
 
   private centroid(points: GazePoint[]): { x: number; y: number } {
@@ -50,7 +62,6 @@ export class FixationDetector {
       return null;
     }
 
-    // Point is outside the fixation radius -- finalize current cluster
     const fixation = this.finalizeCluster();
     this.currentCluster = [point];
     return fixation;

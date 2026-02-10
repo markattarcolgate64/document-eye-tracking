@@ -5,6 +5,7 @@ import { Worker, Viewer } from "@react-pdf-viewer/core";
 import "@react-pdf-viewer/core/lib/styles/index.css";
 import { useDocumentStore } from "@/stores/document-store";
 import { useGazeStore } from "@/stores/gaze-store";
+import { useCalibrationStore } from "@/stores/calibration-store";
 import {
   initGazeEngine,
   onGaze,
@@ -15,6 +16,8 @@ import {
 } from "@/lib/gaze-engine";
 import { FixationDetector } from "@/lib/fixation-detector";
 import { ReadTracker } from "@/lib/read-tracker";
+import { DriftDetector } from "@/lib/drift-detector";
+import type { DriftStatus } from "@/lib/drift-detector";
 import {
   registerTextSpans,
   refreshSpanRects,
@@ -29,15 +32,18 @@ const READ_THRESHOLD_MS = 250;
 export default function DocumentViewer() {
   const { document: doc, updateSession } = useDocumentStore();
   const { setGaze, setTracking } = useGazeStore();
+  const { averageError } = useCalibrationStore();
   const containerRef = useRef<HTMLDivElement>(null);
   const fixationDetectorRef = useRef<FixationDetector | null>(null);
   const readTrackerRef = useRef<ReadTracker>(new ReadTracker(READ_THRESHOLD_MS));
+  const driftDetectorRef = useRef<DriftDetector>(new DriftDetector());
   const [coveragePercent, setCoveragePercent] = useState(0);
   const [readSpans, setReadSpans] = useState(0);
   const [totalSpans, setTotalSpans] = useState(0);
   const [elapsedTime, setElapsedTime] = useState(0);
   const [showGazeCursor, setShowGazeCursor] = useState(true);
   const [isReady, setIsReady] = useState(false);
+  const [driftWarning, setDriftWarning] = useState<string | null>(null);
   const startTimeRef = useRef(0);
 
   useEffect(() => {
@@ -50,11 +56,7 @@ export default function DocumentViewer() {
     ) as HTMLElement | null;
     if (!el) return;
 
-    el.classList.remove(
-      "gaze-fixated",
-      "gaze-partial",
-      "gaze-read"
-    );
+    el.classList.remove("gaze-fixated", "gaze-partial", "gaze-read");
 
     switch (status) {
       case "fixated":
@@ -104,12 +106,26 @@ export default function DocumentViewer() {
     return () => clearInterval(interval);
   }, []);
 
-  // Gaze tracking setup
+  // Gaze tracking setup with adaptive radius and drift detection
   useEffect(() => {
     if (!isReady) return;
 
+    const adaptiveRadius = averageError
+      ? FixationDetector.radiusFromCalibrationError(averageError)
+      : 50;
+
     fixationDetectorRef.current = new FixationDetector({
+      radius: adaptiveRadius,
       onFixation: handleFixation,
+    });
+
+    const drift = driftDetectorRef.current;
+    drift.start((status: DriftStatus, message: string) => {
+      if (status === "ok") {
+        setDriftWarning(null);
+      } else {
+        setDriftWarning(message);
+      }
     });
 
     const startTracking = async () => {
@@ -122,6 +138,7 @@ export default function DocumentViewer() {
       onGaze((point: GazePoint) => {
         setGaze(point);
         fixationDetectorRef.current?.addPoint(point);
+        drift.addPoint(point);
       });
 
       setTracking(true);
@@ -133,8 +150,24 @@ export default function DocumentViewer() {
       removeGazeListener();
       setTracking(false);
       fixationDetectorRef.current?.flush();
+      drift.stop();
     };
-  }, [isReady, handleFixation, setGaze, setTracking]);
+  }, [isReady, handleFixation, setGaze, setTracking, averageError]);
+
+  // Continuous calibration: clicks during reading feed back into WebGazer
+  useEffect(() => {
+    if (!isReady) return;
+
+    const handleClick = () => {
+      // WebGazer automatically records click position + current gaze
+      // as a new training sample when it's running, improving accuracy
+      // over time. No additional code needed -- just ensure WebGazer
+      // is active (which it is during reading).
+    };
+
+    window.addEventListener("click", handleClick);
+    return () => window.removeEventListener("click", handleClick);
+  }, [isReady]);
 
   // Scroll handler to refresh span positions
   useEffect(() => {
@@ -151,13 +184,14 @@ export default function DocumentViewer() {
 
   // Visibility change -- pause tracking when tab is hidden
   useEffect(() => {
-    const handleVisibility = async () => {
+    const handleVisibility = () => {
       if (window.document.hidden) {
         removeGazeListener();
       } else if (isReady) {
         onGaze((point: GazePoint) => {
           setGaze(point);
           fixationDetectorRef.current?.addPoint(point);
+          driftDetectorRef.current.addPoint(point);
         });
       }
     };
@@ -185,7 +219,9 @@ export default function DocumentViewer() {
   if (!doc) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-gray-950">
-        <p className="text-gray-400">No document loaded. Please upload a PDF.</p>
+        <p className="text-gray-400">
+          No document loaded. Please upload a PDF.
+        </p>
       </div>
     );
   }
@@ -198,6 +234,26 @@ export default function DocumentViewer() {
         totalSpans={totalSpans}
         elapsedTime={elapsedTime}
       />
+
+      {driftWarning && (
+        <div className="bg-yellow-900/50 border-b border-yellow-700 px-6 py-2 flex items-center justify-between">
+          <p className="text-yellow-400 text-xs">{driftWarning}</p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setDriftWarning(null)}
+              className="text-xs px-2 py-1 bg-gray-700 text-gray-300 rounded"
+            >
+              Dismiss
+            </button>
+            <a
+              href="/calibrate"
+              className="text-xs px-2 py-1 bg-yellow-700 text-white rounded"
+            >
+              Re-calibrate
+            </a>
+          </div>
+        </div>
+      )}
 
       <div className="flex items-center justify-between px-6 py-2 bg-gray-900 border-b border-gray-800">
         <h2 className="text-white text-sm font-medium truncate max-w-md">
@@ -229,10 +285,7 @@ export default function DocumentViewer() {
         style={{ height: "calc(100vh - 120px)" }}
       >
         <Worker workerUrl="https://unpkg.com/pdfjs-dist@3.11.174/build/pdf.worker.min.js">
-          <Viewer
-            fileUrl={doc.fileUrl}
-            onDocumentLoad={handleDocumentLoad}
-          />
+          <Viewer fileUrl={doc.fileUrl} onDocumentLoad={handleDocumentLoad} />
         </Worker>
       </div>
 
